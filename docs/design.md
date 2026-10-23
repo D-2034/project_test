@@ -27,10 +27,13 @@ before we build; they are collected at the end.
                                                     3. bad file → quarantine note
                                                     4. good files → one Parquet
                                                     5. trips per bus vs ops list
+                                                  on failure, after Lambda's 2 retries:
+                                                    └──► SNS team007-pipeline-alerts
+                                                           └──► email to the team
 ```
 
-One bucket, one Lambda function, one schedule. Nothing runs between nightly
-jobs, so nothing costs anything while idle.
+One bucket, one Lambda function, one schedule, one alert topic. Nothing runs
+between nightly jobs, so nothing costs anything while idle.
 
 **Why a nightly batch, not a Lambda per upload.** Converting each file as it
 arrives would give 8,000 tiny Parquet files a day (about 2 KB each) that later
@@ -124,7 +127,7 @@ uncounted trip (R13).
 | R13 | `reports/…/completeness.csv` compares received trips against `ops/`. |
 | R14 | Block Public Access on; default SSE-S3 encryption; unit credentials kept out of the repo. |
 | R15 | Every resource named `team007-…` and tagged, one create script per service, steps in `teardown.sh`. |
-| R16 | ca-central-1; S3, Lambda and EventBridge Scheduler are all pay-per-use. |
+| R16 | ca-central-1; S3, Lambda, EventBridge Scheduler and SNS are all pay-per-use. |
 
 **Other properties**
 
@@ -132,12 +135,31 @@ uncounted trip (R13).
   `raw/` and `ops/` for that day, and it overwrites its own outputs. Running
   it twice gives the same result, so fixing a bug means re-running, not
   repairing.
-- **Failure handling.** If the Lambda function fails, EventBridge Scheduler
-  retries it; if it still fails, the error is in CloudWatch Logs, the raw
-  files are untouched, and the next night's D-1 re-run catches up.
+- **Failure handling.** EventBridge Scheduler invokes the function
+  asynchronously, so once Lambda accepts the call the scheduler's job is
+  done; a failure inside the function (an error or the 600 s timeout) is
+  retried by Lambda itself, twice. If the last retry also fails, the
+  function's on-failure destination publishes the event (including the
+  error) to the SNS topic `team007-pipeline-alerts`, which emails the team.
+  The raw files are untouched, so the fix is to correct the cause and run
+  `scripts/lambda-run-day.sh <service_day>`; otherwise the next night's D-1
+  re-run catches up a day late.
+
+  **Why an alert.** The error is also in CloudWatch Logs, but nobody reads
+  logs at 02:00; without an alert the operations director finds out at
+  06:00, when yesterday's data is missing. **Why an on-failure destination,
+  not a CloudWatch alarm.** It fires once per failed night, after the
+  retries, and carries the error message; an alarm on the `Errors` metric
+  would also fire on retries that later succeed, and costs $0.10 a month.
+  **Not covered:** if the schedule itself never invokes the function (it
+  is disabled, or its role is broken), no failure event exists, so no email
+  is sent. The completeness report's date shows this; a scheduler
+  dead-letter queue would close the gap but adds SQS for an unlikely case.
 - **Cost at full fleet** (estimated, ca-central-1 prices):
   8,000 PUTs/day ≈ $0.045/day; storage ≈ 160 MB/day added ≈ $0.11/month
-  more each month; one ~1-minute Lambda run per day ≈ free tier.
+  more each month; one ~1-minute Lambda run per day ≈ free tier; SNS
+  alerts free (first 1,000 emails a month are free, and we expect almost
+  none).
   About **$1.50 for a 30-day month**. For the pilot we'll simulate a few days,
   costing cents.
 - **No versioning.** A re-upload replaces the earlier copy (which is what
@@ -160,3 +182,7 @@ uncounted trip (R13).
 4. **Retention:** how long to keep raw and curated data (R7).
 5. **Agency time zone** for the 01:45 schedule (EventBridge Scheduler takes
    an IANA zone, e.g. `America/Toronto`).
+6. **Who gets the failure email**, and is SNS allowed in our account?
+   SNS is a new service for this project, so the team confirms it before
+   it is created (`AGENTS.md`). Each address must click a confirmation
+   link before it receives anything.
