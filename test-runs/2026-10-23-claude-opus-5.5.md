@@ -44,7 +44,7 @@ With your own sandbox profile logged in, ask:
 
 ## 4. Reporting
 
-You can find the chat history for this test-run [here](agent-chat-history)
+You can find the chat history for this test-run [here](agent-chat-history/conversation-2026-10-23.md)
 
 - **Facts:** every number the assistant stated, with the source it gave. Mark the ones it invented.
   - See chat history
